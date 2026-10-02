@@ -1,0 +1,18 @@
+# One entry per source table.
+# format: csv | pipe | json | binary
+# fingerprint: column holding the national id (hashed into id_fingerprint), blank if none
+# drift: true = column names change between files (mapped back in silver)
+tables:
+  branches:           {source: mysql,        format: csv,    fingerprint: ""}
+  loan_products:      {source: mysql,        format: csv,    fingerprint: ""}
+  credit_policy:      {source: excel,        format: csv,    fingerprint: "", drift: true}
+  customers:          {source: salesforce,   format: csv,    fingerprint: Aadhaar__c}
+  loan_applications:  {source: salesforce,   format: csv,    fingerprint: ""}
+  collections:        {source: salesforce,   format: csv,    fingerprint: ""}
+  credit_checks:      {source: bureau_api,   format: json,   fingerprint: ""}
+  loans:              {source: legacy,       format: pipe,   fingerprint: ""}
+  disbursements:      {source: legacy,       format: pipe,   fingerprint: ""}
+  emi_schedule:       {source: legacy,       format: pipe,   fingerprint: ""}
+  repayments:         {source: gateway,      format: json,   fingerprint: ""}
+  bank_settlements:   {source: bank,         format: binary, fingerprint: ""}
+  cash_deposit_slips: {source: branch_scans, format: binary, fingerprint: ""}
