@@ -54,6 +54,12 @@ def load_silver():
         return yaml.safe_load(f)["tables"]
 
 
+def load_id_maps():
+    """Optional `id_maps` section of config/silver.yml (see build_id_map)."""
+    with open(os.path.join(common.repo_root(), "config", "silver.yml")) as f:
+        return yaml.safe_load(f).get("id_maps") or {}
+
+
 def text(c):
     """Trim, collapse spaces, turn fake nulls (NULL, N/A, -) into real NULL."""
     t = F.regexp_replace(F.trim(c), r"\s+", " ")
@@ -423,5 +429,30 @@ def load_scd2(spark, cfg, table, spec):
 
 def load_table(spark, cfg, table, spec):
     return (load_scd2 if spec.get("mode") == "scd2" else load_latest)(spark, cfg, table, spec)
+
+
+def build_id_map(spark, cfg, name, m):
+    """Find the same real-world entity stored under several ids and map every id to one survivor.
+
+    m = {table, key, match, first}: rows of `table` are grouped by the `match` column (for customers
+    the keyed fingerprint of the national id); the id that appeared first (`first`, then the id
+    itself) is the survivor. An id without a match value maps to itself.
+    The map <catalog>.silver.<name> is rebuilt in full on every run (small, and so rerun-safe):
+    key, survivor_id, is_survivor, group_size. Other tables are joined through it; nothing is rewritten.
+    Returns {"ids", "duplicates"}."""
+    key = m["key"]
+    per_id = (spark.table(f"{cfg['catalog']}.silver.{m['table']}").groupBy(key)
+                   .agg(F.max(m["match"]).alias("_match"), F.min(m["first"]).alias("_first")))
+    group = Window.partitionBy("_match")
+    known = F.col("_match").isNotNull()
+    out = (per_id.withColumn("survivor_id", F.when(known, F.first(key).over(group.orderBy("_first", key)))
+                                             .otherwise(F.col(key)))
+                 .withColumn("group_size", F.when(known, F.count("*").over(group)).otherwise(F.lit(1)).cast("int"))
+                 .select(key, "survivor_id", (F.col(key) == F.col("survivor_id")).alias("is_survivor"),
+                         "group_size", F.current_timestamp().alias("_silver_ts")))
+    out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{cfg['catalog']}.silver.{name}")
+    r = spark.table(f"{cfg['catalog']}.silver.{name}").agg(
+        F.count("*").alias("ids"), F.sum((~F.col("is_survivor")).cast("int")).alias("duplicates")).first()
+    return {"ids": r["ids"], "duplicates": int(r["duplicates"] or 0)}
 
     
