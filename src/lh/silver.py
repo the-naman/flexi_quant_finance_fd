@@ -455,4 +455,36 @@ def build_id_map(spark, cfg, name, m):
         F.count("*").alias("ids"), F.sum((~F.col("is_survivor")).cast("int")).alias("duplicates")).first()
     return {"ids": r["ids"], "duplicates": int(r["duplicates"] or 0)}
 
+
+def checkpoint(spark, cfg, tables, max_quarantine_pct=5.0, small_table_rows=2):
+    """The gate between silver and gold. For every table:
+      rows     : the silver table is not empty
+      unique   : one row per key (for history tables: one current row per key)
+      rejected : rows in quarantine for a broken rule (waiting orphans are not counted) stay within
+                 max_quarantine_pct of the table, with small_table_rows always allowed so that one
+                 bad row in a tiny table does not block the run
+    Prints one line per table, writes the result to ops.dq_results and returns True when all pass.
+    The runner stops with an error on False, so gold never reads a silver layer that is not sound."""
+    cat = cfg["catalog"]
+    rejected = {r["table_name"]: r["count"] for r in spark.table(f"{cat}.silver.quarantine")
+                .filter("status = 'open' AND rule <> 'orphan'").groupBy("table_name").count().collect()}
+    out, ok = [], True
+    print(f"{'table':20} {'rows':>7} {'keys':>7} {'rejected':>8} {'allowed':>7}  result")
+    for table, spec in tables.items():
+        df = spark.table(f"{cat}.silver.{table}")
+        if spec.get("mode") == "scd2":
+            df = df.filter("is_current")
+        r = df.agg(F.count("*").alias("n"), F.countDistinct(*spec["key"]).alias("k")).first()
+        bad = rejected.get(table, 0)
+        allowed = max(small_table_rows, int((r["n"] + bad) * max_quarantine_pct / 100))
+        failed = [name for name, wrong in (("rows", r["n"] == 0), ("unique", r["n"] != r["k"]), ("rejected", bad > allowed)) if wrong]
+        ok = ok and not failed
+        print(f"{table:20} {r['n']:>7} {r['k']:>7} {bad:>8} {allowed:>7}  {'FAIL ' + ','.join(failed) if failed else 'pass'}")
+        out.append((table, "checkpoint", r["n"], len(failed), "fail" if failed else "pass"))
+    spark.createDataFrame(out, "table_name string, rule string, checked long, failed long, status string") \
+         .select(F.current_timestamp().alias("run_ts"), "*") \
+         .write.mode("append").saveAsTable(f"{cat}.ops.dq_results")
+    print("SILVER CHECKPOINT", "PASS" if ok else "FAIL")
+    return ok
+
     
