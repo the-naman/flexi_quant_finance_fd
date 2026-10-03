@@ -12,6 +12,10 @@
 # delete   : bronze column and value that mark a deleted row
 # not_before: later_column: earlier_column (the first must not be before the second)
 # prepare  : function in src/lh/prepare.py that first turns the bronze rows into flat text columns
+# id_maps  : (own section) the same real-world entity under several ids -> one survivor id
+id_maps:
+  customer_id_map: {table: customers, key: customer_id, match: id_fingerprint, first: valid_from}
+
 tables:
   branches:
     key: [branch_id]
@@ -159,6 +163,23 @@ tables:
       bank_ref: string
       last_modified: timestamp
 
+  bank_settlements:
+    key: [bank_ref]
+    order: last_modified
+    mode: latest
+    prepare: bank_statement
+    parents: {loan_id: loans}
+    allowed: {status: [settled, returned]}
+    columns:
+      bank_ref: string
+      loan_id: string
+      value_date: date
+      amount: decimal
+      status: code
+      statement_no: string
+      line_no: int
+      last_modified: [timestamp, statement_date]
+
   emi_schedule:
     key: [loan_id, emi_no]
     order: last_modified
@@ -190,6 +211,23 @@ tables:
       mode: code
       late_fee: decimal
       last_modified: timestamp
+
+  cash_deposit_slips:
+    key: [slip_no, branch_id]
+    order: last_modified
+    mode: latest
+    prepare: deposit_slip
+    min_confidence: 0.90                      # a slip read with less confidence goes to quarantine
+    parents: {branch_id: branches}
+    columns:
+      slip_no: string
+      branch_id: string
+      deposit_from: date
+      deposit_to: date
+      receipts: int
+      amount: decimal
+      ocr_confidence: decimal
+      last_modified: [timestamp, deposit_to]
 
   collections:
     key: [collection_id]
