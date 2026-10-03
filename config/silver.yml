@@ -1,0 +1,209 @@
+# Silver rules, one entry per table. The order of this file is the load order: parents first.
+# key      : columns that identify one row
+# order    : column that decides the latest version of a row
+# mode     : latest = keep one row per key | scd2 = keep history
+# columns  : silver_name: type            (same name in bronze)
+#            silver_name: [type, Source]  (renamed from the bronze column "Source")
+#   types  : string | name | city | phone | gender | aadhaar | code (trim + lower case)
+#            int | decimal | date | timestamp
+# allowed  : values a column may hold (checked after cleaning)
+# parents  : column: parent table, looked up by the same column name (row waits in quarantine
+#            while the parent is missing; an empty value is fine)
+# delete   : bronze column and value that mark a deleted row
+# not_before: later_column: earlier_column (the first must not be before the second)
+# prepare  : function in src/lh/prepare.py that first turns the bronze rows into flat text columns
+tables:
+  branches:
+    key: [branch_id]
+    order: last_modified
+    mode: latest
+    delete: {column: is_deleted, value: "1"}
+    columns:
+      branch_id: string
+      branch_name: string
+      city: city
+      state: string
+      opened_date: date
+      last_modified: [timestamp, updated_at]
+
+  loan_products:
+    key: [product_id]
+    order: last_modified
+    mode: scd2
+    delete: {column: is_deleted, value: "1"}
+    allowed: {loan_type: [hospital_bill, personal, business]}
+    columns:
+      product_id: string
+      product_name: string
+      loan_type: code
+      rate_pct: decimal
+      min_amt: decimal
+      max_amt: decimal
+      max_tenure_m: int
+      last_modified: [timestamp, updated_at]
+
+  credit_policy:
+    key: [policy_id]
+    order: last_modified
+    mode: latest
+    prepare: drift_headers
+    headers:                                  # agreed name: other headings the source has used
+      policy_id: [Policy ID, PolicyId]
+      product_id: [Product, product code]
+      max_exposure_per_customer: [Max Exposure, max_exposure]
+      max_dti: [Max DTI %, dti_limit]
+      min_bureau_score: [Min Score, minimum_cibil]
+      effective_from: [Effective From, valid_from]
+      effective_to: [Effective To, valid_to]
+      last_modified: [Last Modified, updated on]
+    parents: {product_id: loan_products}
+    not_before: {effective_to: effective_from}
+    columns:
+      policy_id: string
+      product_id: string
+      max_exposure: [decimal, max_exposure_per_customer]
+      max_dti: decimal
+      min_bureau_score: int
+      effective_from: date
+      effective_to: date
+      last_modified: timestamp
+
+  customers:
+    key: [customer_id]
+    order: last_modified
+    mode: scd2
+    parents: {branch_id: branches}
+    allowed: {employment: [salaried, self_employed, business]}
+    delete: {column: IsDeleted, value: "true"}
+    columns:
+      customer_id: [string, Id]
+      full_name: [name, Name]
+      aadhaar: [aadhaar, Aadhaar__c]
+      phone: [phone, Phone]
+      dob: [date, BirthDate__c]
+      gender: [gender, Gender__c]
+      city: [city, City__c]
+      branch_id: [string, Branch__c]
+      monthly_income: [decimal, MonthlyIncome__c]
+      employment: [code, Employment__c]
+      last_modified: [timestamp, LastModifiedDate]
+
+  loan_applications:
+    key: [application_id]
+    order: last_modified
+    mode: latest
+    parents: {customer_id: customers, product_id: loan_products, branch_id: branches}
+    allowed: {status: [submitted, approved, rejected]}
+    delete: {column: IsDeleted, value: "true"}
+    columns:
+      application_id: [string, Id]
+      customer_id: [string, Customer__c]
+      product_id: [string, Product__c]
+      branch_id: [string, Branch__c]
+      amount: [decimal, Amount__c]
+      tenure_m: [int, Tenure__c]
+      bhg_invoice_id: [string, BHG_Invoice__c]
+      status: [code, Status__c]
+      applied_date: [date, AppliedDate__c]
+      last_modified: [timestamp, LastModifiedDate]
+
+  credit_checks:
+    key: [check_id]
+    order: last_modified
+    mode: latest
+    prepare: bureau_checks
+    parents: {application_id: loan_applications}
+    allowed: {decision: [approve, reject], score_band: [good, fair, poor]}
+    columns:
+      check_id: string
+      application_id: string
+      bureau_score: int
+      score_band: code
+      dti_pct: decimal
+      decision: code
+      check_ts: timestamp
+      last_modified: timestamp
+
+  loans:
+    key: [loan_id]
+    order: last_modified
+    mode: latest
+    parents: {application_id: loan_applications, customer_id: customers, product_id: loan_products, branch_id: branches}
+    allowed: {status: [active, closed]}
+    columns:
+      loan_id: string
+      application_id: string
+      customer_id: string
+      product_id: string
+      branch_id: string
+      principal: decimal
+      rate_pct: decimal
+      tenure_m: int
+      start_date: date
+      status: code
+      last_modified: timestamp
+
+  disbursements:
+    key: [disb_id]
+    order: last_modified
+    mode: latest
+    parents: {loan_id: loans}
+    allowed: {payee_type: [customer, bhg_hospital]}
+    columns:
+      disb_id: string
+      loan_id: string
+      disb_date: date
+      amount: decimal
+      payee_type: code
+      bhg_invoice_id: string
+      bank_ref: string
+      last_modified: timestamp
+
+  emi_schedule:
+    key: [loan_id, emi_no]
+    order: last_modified
+    mode: latest
+    parents: {loan_id: loans}
+    delete: {column: is_deleted, value: "1"}
+    columns:
+      loan_id: string
+      emi_no: int
+      due_date: date
+      principal_due: decimal
+      interest_due: decimal
+      emi_amount: decimal
+      last_modified: [timestamp, updated_at]
+
+  repayments:
+    key: [repay_id]
+    order: last_modified
+    mode: latest
+    prepare: gateway_payments
+    parents: {loan_id: loans}
+    allowed: {mode: [nach, upi, netbanking, cash]}
+    columns:
+      repay_id: string
+      loan_id: string
+      emi_no: int
+      paid_date: date
+      amount: decimal
+      mode: code
+      late_fee: decimal
+      last_modified: timestamp
+
+  collections:
+    key: [collection_id]
+    order: last_modified
+    mode: latest
+    parents: {loan_id: loans}
+    allowed: {action: [call, sms, field_visit]}
+    delete: {column: IsDeleted, value: "true"}
+    columns:
+      collection_id: [string, Id]
+      loan_id: [string, Loan__c]
+      dpd: [int, DPD__c]
+      bucket: [string, Bucket__c]
+      action: [code, Action__c]
+      promise_date: [date, PromiseDate__c]
+      last_modified: [timestamp, LastModifiedDate]
+      
