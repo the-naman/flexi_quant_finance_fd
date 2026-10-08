@@ -17,10 +17,11 @@ personal:                    # silver column names; the bronze name is taken fro
   disbursements:    {bank_ref: token}
   bank_settlements: {bank_ref: token}
   reconciliation:   {ref: token}
+  dim_customer:     {id_fingerprint: token}
 
 technical: [raw_row, _rescued_data, content]      # hold a whole source row or file: hidden in every table that has them
 
 ids:                         # person and transaction ids: shown as tokens in the listed environments
   environments: [test, prod]
-  columns: [customer_id, application_id, collection_id, check_id, loan_id, disb_id, repay_id, bhg_invoice_id]
+  columns: [customer_id, master_customer_id, application_id, collection_id, check_id, loan_id, disb_id, repay_id, bhg_invoice_id]
   
