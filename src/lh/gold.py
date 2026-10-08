@@ -213,20 +213,6 @@ def fact_bhg_event(spark, cat):
     return fact, {"dim_payer": payer}
 
 
-FACTS = {"bhg": {"fact_bhg_event": fact_bhg_event}}
-
-
-def build_facts(spark, cfg):
-    """Build this company's facts and the dimensions that come out of them. Returns {table: rows}."""
-    out = {}
-    for name, fn in FACTS.get(cfg["code"], {}).items():
-        fact, extra = fn(spark, cfg["catalog"])
-        for dim, df in extra.items():
-            out[dim] = save(spark, cfg, dim, df)
-        out[name] = save(spark, cfg, name, fact)
-    return out
-
-
 def dim_branch(spark, cat):
     b = spark.table(f"{cat}.silver.branches")
     df = b.select(skey("branch_id").alias("branch_key"), "branch_id", "branch_name", "city", "state", "opened_date",
@@ -292,6 +278,61 @@ def dim_loan(spark, cat):
     return with_unknown(spark, df, "loan_key", {"loan_id": "unknown", "status": "unknown", "dpd_bucket": "unknown"})
 
 
+def fact_fqf_event(spark, cat):
+    """One row per money event on an FQF loan. Returns (fact, {}).
+
+    lending     disbursement (money paid out: to the customer or to a BHG hospital)
+    due         emi_due (each instalment that has fallen due up to today, split into principal and interest)
+    collection  repayment (instalment paid; split like the instalment it pays)
+    fee         late_fee
+    A loan that is not in silver (orphan repayment) gets key -1 for loan, customer, product and branch."""
+    t = lambda name: spark.table(f"{cat}.silver.{name}").filter(~F.col("is_deleted"))
+    emi = t("emi_schedule").select("loan_id", "emi_no", "due_date", "principal_due", "interest_due", "emi_amount")
+    rep = t("repayments").join(emi, ["loan_id", "emi_no"], "left")
+    late = F.greatest(F.datediff("paid_date", "due_date"), F.lit(0))
+    nul = F.lit(None)
+
+    def shape(df, etype, group, eid, ts, amount, principal=nul, interest=nul, dpd=nul, mode=nul, emi_no=nul, inv=nul):
+        return df.select(F.lit(etype).alias("event_type"), F.lit(group).alias("event_group"),
+                         F.col(eid).alias("event_id"), F.col(ts).cast("timestamp").alias("event_ts"), "loan_id",
+                         amount.cast("decimal(18,2)").alias("amount"),
+                         principal.cast("decimal(18,2)").alias("principal_part"),
+                         interest.cast("decimal(18,2)").alias("interest_part"),
+                         dpd.cast("int").alias("dpd_at_event"), mode.cast("string").alias("pay_mode"),
+                         emi_no.cast("int").alias("emi_no"), inv.cast("string").alias("bhg_invoice_id"))
+
+    ev = reduce(lambda x, y: x.unionByName(y), [
+        shape(t("disbursements"), "disbursement", "lending", "disb_id", "disb_date", F.col("amount"),
+              principal=F.col("amount"), inv=F.col("bhg_invoice_id")),
+        shape(emi.filter(F.col("due_date") <= F.current_date())
+                 .withColumn("_id", F.concat_ws("-", "loan_id", F.lpad(F.col("emi_no").cast("string"), 3, "0"))),
+              "emi_due", "due", "_id", "due_date", F.col("emi_amount"), F.col("principal_due"), F.col("interest_due"),
+              emi_no=F.col("emi_no")),
+        shape(rep, "repayment", "collection", "repay_id", "paid_date", F.col("amount"),
+              F.col("principal_due"), F.col("interest_due"), late, F.col("mode"), F.col("emi_no")),
+        shape(rep.filter("late_fee > 0"), "late_fee", "fee", "repay_id", "paid_date", F.col("late_fee"),
+              dpd=late, mode=F.col("mode"), emi_no=F.col("emi_no"))])
+
+    loans = spark.table(f"{cat}.silver.loans").filter(~F.col("is_deleted")).select(
+        F.col("loan_id").alias("_loan"), "customer_id", "product_id", "branch_id")
+    ev = ev.join(loans, F.col("loan_id") == F.col("_loan"), "left")
+    ev = as_of(ev, versions(spark, cat, "customers", "customer_id", "customer_key"), "customer_id", "customer_key")
+    ev = as_of(ev, versions(spark, cat, "loan_products", "product_id", "product_key"), "product_id", "product_key")
+    branches = spark.table(f"{cat}.silver.branches").select(F.col("branch_id").alias("_b"))
+    ev = ev.join(branches, F.col("branch_id") == F.col("_b"), "left")
+    found = F.col("_loan").isNotNull()
+    known = lambda c: F.when(found, F.col(c)).otherwise(F.lit(-1)).cast("bigint")
+
+    fact = ev.select(skey("event_type", "event_id").alias("event_key"), "event_id", "event_type", "event_group",
+                     F.date_format("event_ts", "yyyyMMdd").cast("int").alias("date_key"),
+                     F.when(found, skey("loan_id")).otherwise(F.lit(-1)).cast("bigint").alias("loan_key"),
+                     known("customer_key").alias("customer_key"), known("product_key").alias("product_key"),
+                     F.when(F.col("_b").isNotNull(), skey("branch_id")).otherwise(F.lit(-1)).cast("bigint").alias("branch_key"),
+                     "loan_id", "emi_no", "amount", "principal_part", "interest_part", "dpd_at_event", "pay_mode",
+                     "bhg_invoice_id", F.col("bhg_invoice_id").isNotNull().alias("is_hospital_bill"))
+    return fact, {}
+
+
 DIMENSIONS = {"bhg": {"dim_hospital": dim_hospital, "dim_doctor": dim_doctor, "dim_patient": dim_patient},
               "fqf": {"dim_branch": dim_branch, "dim_product": dim_product, "dim_customer": dim_customer,
                       "dim_loan": dim_loan}}
@@ -301,4 +342,19 @@ def build_dimensions(spark, cfg):
     """Build this company's dimensions. Returns {table: rows}."""
     return {name: save(spark, cfg, name, fn(spark, cfg["catalog"]))
             for name, fn in DIMENSIONS.get(cfg["code"], {}).items()}
+
+
+FACTS = {"bhg": {"fact_bhg_event": fact_bhg_event}, "fqf": {"fact_fqf_event": fact_fqf_event}}
+
+
+def build_facts(spark, cfg):
+    """Build this company's facts and the dimensions that come out of them. Returns {table: rows}."""
+    out = {}
+    for name, fn in FACTS.get(cfg["code"], {}).items():
+        fact, extra = fn(spark, cfg["catalog"])
+        for dim, df in extra.items():
+            out[dim] = save(spark, cfg, dim, df)
+        out[name] = save(spark, cfg, name, fact)
+    return out
+
     
