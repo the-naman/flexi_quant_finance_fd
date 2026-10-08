@@ -6,7 +6,7 @@ clear:
   prod: [lh_management]
 pipeline: {test: sp_fqf_test, prod: sp_fqf_prod}                 # job accounts, always see real values
 
-layers: [bronze, silver]                                         # gold is added in step 5.5
+layers: [bronze, silver, gold]                                   # gold tables get their masks in the gold runner
 
 # mask types:  last4   = only the last 4 characters shown
 #              initial = first letter, then ***
