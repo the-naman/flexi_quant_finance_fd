@@ -1,0 +1,914 @@
+{
+  "datasets": [
+    {
+      "name": "flow",
+      "displayName": "Money in and out",
+      "queryLines": [
+        "SELECT branch, product,\n",
+        "       sum(CASE WHEN event_type = 'disbursement' THEN amount ELSE 0 END) AS disbursed,\n",
+        "       sum(CASE WHEN event_type = 'repayment' THEN amount ELSE 0 END) AS collected,\n",
+        "       sum(CASE WHEN event_type = 'repayment' THEN interest ELSE 0 END) AS interest_earned,\n",
+        "       sum(CASE WHEN event_type = 'late_fee' THEN amount ELSE 0 END) AS late_fees\n",
+        "FROM fqf_dev.gold.v_fqf_portfolio_daily\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "book",
+      "displayName": "Loan book today",
+      "queryLines": [
+        "SELECT branch, product,\n",
+        "       sum(CASE WHEN status = 'active' THEN loans ELSE 0 END) AS active_loans,\n",
+        "       sum(outstanding) AS outstanding,\n",
+        "       sum(CASE WHEN dpd_bucket <> 'current' THEN outstanding ELSE 0 END) AS overdue_outstanding\n",
+        "FROM fqf_dev.gold.v_fqf_loan_book\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "month",
+      "displayName": "Disbursed, due and collected by month",
+      "queryLines": [
+        "SELECT year_month, branch, product,\n",
+        "       CASE event_type WHEN 'disbursement' THEN 'disbursed' WHEN 'emi_due' THEN 'due' ELSE 'collected' END AS measure,\n",
+        "       sum(amount) AS amount\n",
+        "FROM fqf_dev.gold.v_fqf_portfolio_daily\n",
+        "WHERE event_type IN ('disbursement', 'emi_due', 'repayment')\n",
+        "  AND date <= (SELECT CASE WHEN max(date) = last_day(max(date)) THEN max(date)\n",
+        "                           ELSE last_day(add_months(max(date), -1)) END FROM fqf_dev.gold.v_fqf_portfolio_daily)   -- complete months only\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "bucket",
+      "displayName": "Outstanding by overdue bucket",
+      "queryLines": [
+        "SELECT dpd_bucket, branch, product, sum(outstanding) AS outstanding\n",
+        "FROM fqf_dev.gold.v_fqf_loan_book WHERE status = 'active'\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "purpose",
+      "displayName": "Disbursed by purpose",
+      "queryLines": [
+        "SELECT branch, product,\n",
+        "       CASE WHEN is_hospital_bill THEN 'BHG hospital bill' ELSE 'other' END AS purpose,\n",
+        "       sum(amount) AS disbursed\n",
+        "FROM fqf_dev.gold.v_fqf_portfolio_daily WHERE event_type = 'disbursement'\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "score",
+      "displayName": "Loans by credit score band",
+      "queryLines": [
+        "SELECT coalesce(score_band, 'unknown') AS score_band, status, branch, product, sum(loans) AS loans\n",
+        "FROM fqf_dev.gold.v_fqf_loan_book\n",
+        "GROUP BY ALL\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "lending",
+      "displayName": "FQF lending",
+      "layout": [
+        {
+          "widget": {
+            "name": "title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## FQF lending  ·  Flexi Quant Finance\n",
+                "\n",
+                "#### Outstanding = principal of active loans minus principal repaid. Overdue = any bucket other than current. Source: fqf\\_dev.gold views."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 4,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "f_branch",
+            "queries": [
+              {
+                "name": "f_branch_flow",
+                "query": {
+                  "datasetName": "flow",
+                  "fields": [
+                    {
+                      "name": "branch",
+                      "expression": "`branch`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_branch_book",
+                "query": {
+                  "datasetName": "book",
+                  "fields": [
+                    {
+                      "name": "branch",
+                      "expression": "`branch`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_branch_month",
+                "query": {
+                  "datasetName": "month",
+                  "fields": [
+                    {
+                      "name": "branch",
+                      "expression": "`branch`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_branch_bucket",
+                "query": {
+                  "datasetName": "bucket",
+                  "fields": [
+                    {
+                      "name": "branch",
+                      "expression": "`branch`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_branch_purpose",
+                "query": {
+                  "datasetName": "purpose",
+                  "fields": [
+                    {
+                      "name": "branch",
+                      "expression": "`branch`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_branch_score",
+                "query": {
+                  "datasetName": "score",
+                  "fields": [
+                    {
+                      "name": "branch",
+                      "expression": "`branch`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "branch",
+                    "displayName": "Branch",
+                    "queryName": "f_branch_flow"
+                  },
+                  {
+                    "fieldName": "branch",
+                    "displayName": "Branch",
+                    "queryName": "f_branch_book"
+                  },
+                  {
+                    "fieldName": "branch",
+                    "displayName": "Branch",
+                    "queryName": "f_branch_month"
+                  },
+                  {
+                    "fieldName": "branch",
+                    "displayName": "Branch",
+                    "queryName": "f_branch_bucket"
+                  },
+                  {
+                    "fieldName": "branch",
+                    "displayName": "Branch",
+                    "queryName": "f_branch_purpose"
+                  },
+                  {
+                    "fieldName": "branch",
+                    "displayName": "Branch",
+                    "queryName": "f_branch_score"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Branch"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "f_product",
+            "queries": [
+              {
+                "name": "f_product_flow",
+                "query": {
+                  "datasetName": "flow",
+                  "fields": [
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_product_book",
+                "query": {
+                  "datasetName": "book",
+                  "fields": [
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_product_month",
+                "query": {
+                  "datasetName": "month",
+                  "fields": [
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_product_bucket",
+                "query": {
+                  "datasetName": "bucket",
+                  "fields": [
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_product_purpose",
+                "query": {
+                  "datasetName": "purpose",
+                  "fields": [
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "f_product_score",
+                "query": {
+                  "datasetName": "score",
+                  "fields": [
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "product",
+                    "displayName": "Product",
+                    "queryName": "f_product_flow"
+                  },
+                  {
+                    "fieldName": "product",
+                    "displayName": "Product",
+                    "queryName": "f_product_book"
+                  },
+                  {
+                    "fieldName": "product",
+                    "displayName": "Product",
+                    "queryName": "f_product_month"
+                  },
+                  {
+                    "fieldName": "product",
+                    "displayName": "Product",
+                    "queryName": "f_product_bucket"
+                  },
+                  {
+                    "fieldName": "product",
+                    "displayName": "Product",
+                    "queryName": "f_product_purpose"
+                  },
+                  {
+                    "fieldName": "product",
+                    "displayName": "Product",
+                    "queryName": "f_product_score"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Product"
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c_disb",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "flow",
+                  "fields": [
+                    {
+                      "name": "sum(disbursed)",
+                      "expression": "SUM(`disbursed`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(disbursed)",
+                  "displayName": "Disbursed"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Disbursed"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "c_coll",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "flow",
+                  "fields": [
+                    {
+                      "name": "sum(collected)",
+                      "expression": "SUM(`collected`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(collected)",
+                  "displayName": "Collected"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Collected"
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "c_int",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "flow",
+                  "fields": [
+                    {
+                      "name": "sum(interest_earned)",
+                      "expression": "SUM(`interest_earned`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(interest_earned)",
+                  "displayName": "Interest earned"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Interest earned"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "c_out",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "book",
+                  "fields": [
+                    {
+                      "name": "sum(outstanding)",
+                      "expression": "SUM(`outstanding`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(outstanding)",
+                  "displayName": "Outstanding"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Outstanding"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "c_over",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "book",
+                  "fields": [
+                    {
+                      "name": "sum(overdue_outstanding)",
+                      "expression": "SUM(`overdue_outstanding`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(overdue_outstanding)",
+                  "displayName": "Overdue outstanding"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Overdue outstanding"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "c_active",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "book",
+                  "fields": [
+                    {
+                      "name": "sum(active_loans)",
+                      "expression": "SUM(`active_loans`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(active_loans)",
+                  "displayName": "Active loans"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Active loans"
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "w_month",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "month",
+                  "fields": [
+                    {
+                      "name": "year_month",
+                      "expression": "`year_month`"
+                    },
+                    {
+                      "name": "measure",
+                      "expression": "`measure`"
+                    },
+                    {
+                      "name": "sum(amount)",
+                      "expression": "SUM(`amount`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "year_month",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Month"
+                },
+                "y": {
+                  "fieldName": "sum(amount)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Amount"
+                },
+                "color": {
+                  "fieldName": "measure",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Measure"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Disbursed, due and collected by month (complete months)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "w_prod",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "book",
+                  "fields": [
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    },
+                    {
+                      "name": "sum(outstanding)",
+                      "expression": "SUM(`outstanding`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "product",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Product"
+                },
+                "y": {
+                  "fieldName": "sum(outstanding)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Outstanding"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Outstanding by product"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "w_bucket",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bucket",
+                  "fields": [
+                    {
+                      "name": "dpd_bucket",
+                      "expression": "`dpd_bucket`"
+                    },
+                    {
+                      "name": "sum(outstanding)",
+                      "expression": "SUM(`outstanding`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "dpd_bucket",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Bucket"
+                },
+                "y": {
+                  "fieldName": "sum(outstanding)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Outstanding"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Outstanding by overdue bucket"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 11,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "w_purpose",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "purpose",
+                  "fields": [
+                    {
+                      "name": "branch",
+                      "expression": "`branch`"
+                    },
+                    {
+                      "name": "purpose",
+                      "expression": "`purpose`"
+                    },
+                    {
+                      "name": "sum(disbursed)",
+                      "expression": "SUM(`disbursed`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "branch",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Branch"
+                },
+                "y": {
+                  "fieldName": "sum(disbursed)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Disbursed"
+                },
+                "color": {
+                  "fieldName": "purpose",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Purpose"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Disbursed by branch and purpose"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 17,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "w_score",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "score",
+                  "fields": [
+                    {
+                      "name": "score_band",
+                      "expression": "`score_band`"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "sum(loans)",
+                      "expression": "SUM(`loans`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "score_band",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Score band"
+                },
+                "y": {
+                  "fieldName": "sum(loans)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Loans"
+                },
+                "color": {
+                  "fieldName": "status",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Status"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Loans by credit score band"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 17,
+            "width": 3,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}
