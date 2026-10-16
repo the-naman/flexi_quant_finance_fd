@@ -40,6 +40,7 @@ SELECT
   l.tenure_m,
   l.start_date,
   l.status,
+  l.channel,                          -- source column from 15 Oct 2026 (branch, app, web, partner_hospital), NULL before
   l.bureau_score,
   l.score_band,
   l.dti_pct,
@@ -54,5 +55,5 @@ LEFT JOIN latest_bucket b ON l.loan_id = b.loan_id
 WHERE l.rn = 1
 
 UNION ALL
---     key  loan_id    application principal rate tenure start status     score band  dti   policy max_dti min_score max_exp hospital_bill dpd_bucket
-SELECT -1,  'unknown', NULL,       NULL,     NULL, NULL, NULL, 'unknown', NULL, NULL, NULL, NULL,  NULL,   NULL,     NULL,   NULL,         'unknown'
+--     key  loan_id    application principal rate tenure start status     channel score band  dti   policy max_dti min_score max_exp hospital_bill dpd_bucket
+SELECT -1,  'unknown', NULL,       NULL,     NULL, NULL, NULL, 'unknown', NULL,   NULL, NULL, NULL, NULL,  NULL,   NULL,     NULL,   NULL,         'unknown'
