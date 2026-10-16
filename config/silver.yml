@@ -10,6 +10,8 @@
 # parents  : column: parent table, looked up by the same column name (row waits in quarantine
 #            while the parent is missing; an empty value is fine)
 # delete   : bronze column and value that mark a deleted row
+# from_rescued: new source columns read from bronze _rescued_data (Phase 4: a new column lands there and is added
+#            to silver only through a reviewed PR); the runner adds them to the table and backfills once
 # not_before: later_column: earlier_column (the first must not be before the second)
 # prepare  : function in src/lh/prepare.py that first turns the bronze rows into flat text columns
 # id_maps  : (own section) the same real-world entity under several ids -> one survivor id
@@ -145,7 +147,9 @@ tables:
       tenure_m: int
       start_date: date
       status: code
+      channel: code                       # new source column from 15 Oct 2026 (NULL before)
       last_modified: timestamp
+    from_rescued: [channel]
 
   disbursements:
     key: [disb_id]
@@ -244,4 +248,3 @@ tables:
       action: [code, Action__c]
       promise_date: [date, PromiseDate__c]
       last_modified: [timestamp, LastModifiedDate]
-      
