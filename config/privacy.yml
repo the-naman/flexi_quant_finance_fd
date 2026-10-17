@@ -2,8 +2,11 @@
 # A person in a "clear" group sees real values. Everyone else sees the masked value.
 clear:
   dev:  [lh_management, lh_developer, lh_teamlead, lh_manager]   # synthetic data; these roles run the pipeline here
-  test: [lh_management]
-  prod: [lh_management]
+  test: [lh_management, lh_group_reader]
+  prod: [lh_management, lh_group_reader]
+  # lh_group_reader = the BHG job accounts (sp_bhg_test, sp_bhg_prod). The group consolidation (BHG repo) reads
+  # fqf_<env>.gold to match people and hospital-bill payouts, so it needs the real keys there; its grants allow
+  # SELECT on fqf_<env>.gold only (no bronze, silver or raw files), and Gold holds no names, phones or dates of birth.
 pipeline: {test: sp_fqf_test, prod: sp_fqf_prod}                 # job accounts, always see real values
 
 layers: [bronze, silver, gold]                                   # gold tables get their masks in the gold runner
