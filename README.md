@@ -39,3 +39,16 @@ For a prod problem that cannot wait for the normal path (rules in `config/ci.yml
    the Business-user Manager approves.
 4. After the prod deploy, `backmerge.yml` (`ci/backmerge.py`) opens a pull request `fqf_prod -> fqf_dev`
    so dev keeps the fix. Merge it with "Create a merge commit", then delete the hotfix branch.
+
+## Controlled refresh (5.11)
+Test and dev can get a safe copy of real-looking data: prod -> test (half of the people), test -> dev (a tenth).
+Rules in `config/refresh.yml`, logic in `src/lh/refresh.py`. People are picked by a keyed hash of their national id
+(the same people in BHG and FQF) with all their rows; reference rows come complete. Personal values are faked, the ids
+of `config/privacy.yml` are re-keyed with a secret key, amounts are kept. The source job account writes only sanitised
+files into the target's `ops.refresh_in`; the target adds them to its Silver (its own rows stay) and rebuilds Gold.
+1. Actions -> **refresh** -> Run workflow, "Use workflow from" = the prod branch, target = test. Approve the
+   `<code>_refresh` environment. Do FQF first, then BHG.
+2. The workflow runs `refresh/01_refresh_out` (source), `refresh/02_refresh_in` and the normal test job (target).
+3. Check: `checks/t31_refresh` with env = test.
+For dev: same with target = dev; then each person runs `refresh/02_refresh_in` (env dev) and their own dev job.
+A Silver rebuild from Bronze (`silver_rebuild`) removes the refreshed rows; run the refresh again after one.
