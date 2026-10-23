@@ -1,0 +1,141 @@
+# Data dictionary for Flexi Quant Finance (FQF). Applied by src/lh/dictionary.py in the BI step of the daily job.
+# One line per description, no quotes. Personal columns are masked for most readers (config/privacy.yml).
+silver:
+  branches: {about: FQF branches from MySQL, latest version per branch}
+  loan_products: {about: Loan products from MySQL with history of rate and limit changes (SCD2)}
+  credit_policy: {about: Credit policies (maximum DTI, minimum bureau score, maximum exposure) from Excel sheets whose headers drift}
+  customers: {about: FQF customers from Salesforce with history of changes (SCD2). Personal columns are masked}
+  customer_id_map: {about: Ties duplicate customer records of one person to one master customer id}
+  loan_applications: {about: Loan applications from Salesforce, latest version per application}
+  credit_checks: {about: Credit bureau results flattened from the bureau API (JSON lines)}
+  loans: {about: Loans from the legacy core system (pipe-delimited text, dd-mm-yyyy dates)}
+  disbursements: {about: Loan payouts from the legacy core; hospital-bill loans pay a BHG invoice}
+  bank_settlements: {about: Bank statement lines read from the daily PDF statements, reconciled against disbursements}
+  emi_schedule: {about: Instalment schedule per loan from the legacy core}
+  repayments: {about: Repayments from the payment gateway (JSON lines)}
+  cash_deposit_slips: {about: Cash deposit slips read from scanned branch images (PNG)}
+  collections: {about: Collection cases from Salesforce with the latest overdue bucket}
+  payment_events: {about: Real-time payment events from Kafka, parsed, de-duplicated within a 15-minute watermark; late and broken messages left out}
+gold:
+  dim_date:
+    about: Calendar dimension, one row per day 2025 to 2027, shared by both companies so they join on date_key. Fiscal year runs April to March (India).
+    columns:
+      date_key: Day as a number yyyymmdd; joins every fact to this table
+      date: Calendar date
+      year: Calendar year
+      quarter: Calendar quarter 1 to 4
+      month: Month number 1 to 12
+      month_name: Month name, for example October
+      year_month: Year and month as text yyyy-mm, used for monthly charts
+      day: Day of the month
+      day_of_week: Day of the week as a number, 1 = Monday
+      day_name: Day name, for example Monday
+      week_of_year: ISO week number
+      is_weekend: True on Saturday and Sunday
+      is_month_end: True on the last day of the month
+      fiscal_year: Indian financial year, April to March, for example FY2026-27
+      fiscal_quarter: Fiscal quarter 1 to 4 within the financial year, 1 = April to June
+  dim_branch:
+    about: One row per FQF branch plus the unknown branch (key -1)
+    columns:
+      branch_key: Surrogate key, hash of branch_id; -1 = unknown branch
+      branch_id: Branch code from the source system
+      branch_name: Branch name
+      city: City of the branch, standardised (for example Bengaluru)
+      state: State of the branch
+      opened_date: Date the branch opened
+      is_active: False if the branch was closed (soft delete in the source)
+  dim_product:
+    about: Loan products with their history; join on product_key valid for the event date
+    columns:
+      product_key: Surrogate key, hash of product_id and valid_from
+      product_id: Product code
+      product_name: Product name shown to customers
+      loan_type: Type of loan, for example personal or hospital bill
+      rate_pct: Annual interest rate in percent for this version
+      min_amt: Smallest amount that can be lent, INR
+      max_amt: Largest amount that can be lent, INR
+      max_tenure_m: Longest tenure in months
+      valid_from: First day this version applies
+      valid_to: Last day this version applies (9999-12-31 for the current one)
+      is_current: True for the version in force today
+  dim_customer:
+    about: FQF customers with history (SCD2). Names, phones and dates of birth are not in Gold; ids are tokens for most readers in test and prod
+    columns:
+      customer_key: Surrogate key, hash of customer_id and valid_from; -1 = unknown
+      customer_id: Customer id after merging duplicates (token in test and prod)
+      master_customer_id: Id that ties duplicate records of one person together (token in test and prod)
+      gender: Gender as recorded
+      city: City, standardised
+      branch_id: Home branch code
+      income_band: Monthly income grouped into bands; the exact income is never in Gold
+      employment: Employment type
+      id_fingerprint: Keyed hash of the national id, used only to match people across companies (masked)
+      contact_fingerprint: Keyed hash of phone and date of birth, used only to flag look-alikes for review (masked)
+      valid_from: First day this version applies
+      valid_to: Last day this version applies
+      is_current: True for the current version
+  dim_loan:
+    about: One row per loan with its credit check, the policy in force on the application date and the latest overdue bucket
+    columns:
+      loan_key: Surrogate key, hash of loan_id; -1 = unknown
+      loan_id: Loan id (token in test and prod)
+      application_id: Application the loan came from (token in test and prod)
+      principal: Amount lent, INR
+      rate_pct: Annual interest rate in percent
+      tenure_m: Tenure in months
+      start_date: Date the loan started
+      status: active or closed
+      channel: branch, app, web or partner_hospital; empty for loans before 15 Oct 2026
+      bureau_score: Credit bureau score at application
+      score_band: Bureau score grouped into bands
+      dti_pct: Debt-to-income ratio in percent at application
+      policy_id: Credit policy version in force on the application date
+      policy_max_dti: Maximum DTI allowed by that policy
+      policy_min_bureau_score: Minimum bureau score required by that policy
+      policy_max_exposure: Maximum total exposure per person allowed by that policy, INR
+      is_hospital_bill: True if the loan pays a BHG hospital bill
+      dpd_bucket: Latest days-past-due bucket, current = not overdue
+  fact_fqf_event:
+    about: One row per money event of a loan (disbursement, EMI due, repayment, late fee); amounts in INR; grain = one event
+    columns:
+      event_key: Surrogate key of the event, unique
+      event_id: Event id from the source
+      event_type: disbursement, emi_due, repayment or late_fee
+      event_group: lending, due, collection or fee
+      date_key: Day of the event, joins dim_date
+      loan_key: Joins dim_loan
+      customer_key: Joins dim_customer, version valid on the event date
+      product_key: Joins dim_product, version valid on the event date
+      branch_key: Joins dim_branch
+      loan_id: Loan id (token in test and prod)
+      emi_no: Instalment number for EMI and repayment events
+      amount: Amount of the event, INR
+      principal_part: Part of a repayment that reduces the principal, INR
+      interest_part: Part of a repayment that is interest, INR
+      dpd_at_event: Days past due when the event happened
+      pay_mode: How a repayment was paid, for example upi or nach
+      bhg_invoice_id: BHG invoice paid by a hospital-bill disbursement (token in test and prod)
+      is_hospital_bill: True for events of hospital-bill loans
+  payment_failure_windows:
+    about: Real-time stream. Failed payments per customer in closed 10-minute windows; 3 or more = velocity alert, mailed once
+    columns:
+      window_start: Start of the 10-minute window, UTC
+      window_end: End of the 10-minute window, UTC
+      customer_ref: Synthetic customer reference from the payment events (masked as a token)
+      failed_payments: Failed payments by this customer in the window
+      failed_amount: Amount of the failed payments, INR
+      first_failed_ts: Time of the first failure in the window, UTC
+      last_failed_ts: Time of the last failure in the window, UTC
+      is_alert: True if failed_payments reached the alert level (3)
+views:
+  v_fqf_portfolio_daily: {about: Lending activity per day, product, branch and event type (no personal columns)}
+  v_fqf_loan_book: {about: Loan book today by status, overdue bucket, score band, product and branch}
+  v_fqf_payments_live: {about: Real-time payments per IST day, hour, method, status and reason (no customer column)}
+  v_fqf_payment_alerts: {about: Closed 10-minute windows with 3 or more failed payments; customer reference is masked as a token; times in IST}
+  v_health_runs: {about: Last run of each pipeline step and its runs and failures in the last 7 days}
+  v_health_freshness: {about: How far the company fact reaches and how many days it is behind today}
+  v_health_dq: {about: Latest data-quality result per table and rule}
+  v_health_quarantine: {about: Rows held in quarantine per table and rule (no row content)}
+  v_health_quarantine_daily: {about: New quarantine rows per IST day, table and rule}
+  v_health_rescued: {about: Column names found in Bronze rescued data, planned or new (names only)}
