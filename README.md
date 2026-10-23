@@ -55,7 +55,8 @@ For dev: same with target = dev; then each person runs `refresh/02_refresh_in` (
 A Silver rebuild from Bronze (`silver_rebuild`) removes the refreshed rows; run the refresh again after one.
 
 ## Alerts and weekly digest (5.12)
-Kinds of mail, each to the people who act on it (from go-live, 5.13, Management also gets test/prod failures and alerts):
+Kinds of mail, each to the people who act on it (from go-live, 5.13, Management also gets test/prod failures and alerts;
+a failed deploy goes to the fixers and Management only, never to the Business Manager):
 
 | Mail | Sent by | When |
 |---|---|---|
@@ -67,7 +68,7 @@ Kinds of mail, each to the people who act on it (from go-live, 5.13, Management 
 | your own dev run | Databricks (`config/jobs.yml` notify.dev) | each person's dev job mails only its owner, on failure and on success |
 
 Rules and recipients: `config/alerts.yml`. Each finding is mailed once (`ops.notice_log`, `alert_<kind>`); the
-scheduled run is quiet until `live` is switched on at go-live. Alerts read only the health views
+scheduled run is live in dev, test and prod since go-live (23 Oct 2026). Alerts read only the health views
 (`gold.v_health_*`) and the ops logs as `sp_lh_notices`; no personal values, no row keys. The new-column watch
 (`src/lh/observe.py`, run by `bi/01_create_views`) keeps only the column NAMES found in Bronze `_rescued_data`
 (`ops.rescued_keys`); a new name is planned by adding it to `from_rescued` in `config/silver.yml` through a PR.
@@ -85,6 +86,37 @@ reads them with Structured Streaming (`src/lh/stream.py`, rules in `config/strea
 | Gold | `gold.payment_failure_windows` | failed payments per customer per 10-minute window, written once the window is closed; `is_alert` = 3 or more |
 
 Each layer keeps its own checkpoint, so nothing is read twice and a missed run is caught up. A velocity alert is
-mailed once by `ci/alerts.py`. Security: Kafka user `lh_producer` may only write, `lh_consumer_<env>` may only read its
+mailed once by `ci/alerts.py`, and the dashboard `fqf_lending_<env>` has a page **Payment events** (views
+`v_fqf_payments_live`: payments per IST day, hour, method and status; `v_fqf_payment_alerts`: alert windows).
+Privacy: `gold.payment_failure_windows.customer_ref` is masked as a token in test/prod (`config/privacy.yml`), so
+alert mails and the dashboard show tokens to everyone outside the clear groups. Bronze and Silver payment_events carry
+no masks on purpose: Databricks cannot stream from a masked table; they hold synthetic references only. Security: Kafka user `lh_producer` may only write, `lh_consumer_<env>` may only read its
 own topic (Aiven ACL); the consumer password of each environment sits only in its own scope `lh_<env>`. Events carry
 synthetic references only. Check: `checks/t32_stream`. Free Edition runs no 24/7 streams, hence scheduled runs.
+
+## Go-live: schedule and operations (5.13)
+Live since 23 Oct 2026. Every time below is IST (Asia/Kolkata); GitHub schedules are written in UTC and avoid the
+top of the hour, where GitHub may delay or drop runs. Test and prod each run one job at a time, test after prod.
+
+| When (IST) | What | Does |
+|---|---|---|
+| 00:01, safety run 01:01 | `simulator.yml` | writes yesterday's source files (the safety run writes nothing if the day already exists) |
+| 03:00 FQF, 04:00 BHG | `lh_<code>_prod_daily` | prod daily job (BHG after FQF: the group view reads FQF Gold) |
+| 05:00 FQF, 06:00 BHG | `lh_<code>_test_daily` | test daily job |
+| 03:45 to 19:45, every 2 h | `notices.yml` | business notices (figures delayed / up to date again / FQF merged) |
+| 04:45 to 20:45, every 2 h | `alerts.yml` | data alerts for prod (after the prod jobs); 07:05 test; Monday 09:15 weekly digest; 20:45 dev activity |
+| 07:00 to 21:00, every 2 h | `stream.yml` | synthetic payment events to Kafka (test and prod topics) |
+| 07:30 to 21:30, every 2 h | `lh_fqf_prod_stream` | reads the prod events (bronze -> silver -> gold) |
+| 08:50, 14:50, 20:50 | `lh_fqf_test_stream` | reads the test events |
+| 1st of the month, 08:47 | `keepalive.yml` | keeps the scheduled workflows enabled |
+
+Dev jobs (`lh_fqf_dev_*_<role>`) have no schedule: each person runs their own. Daily checks: the smoke check
+(`checks/t00_job_smoke`) ends every daily run; a deploy is followed by `checks/t28_jobs`; access by `checks/t29_role_access`.
+
+When something goes wrong:
+- A failed task mails the fixers at once; a late or failed prod run also sends one plain "figures delayed" notice.
+- Re-run a failed test/prod job from Jobs -> the run -> Repair run (Manager in test, Management in prod).
+- A brand-new test/prod job fails its first deploy with "only workspace admins can change the owner of a job":
+  Management opens the job -> Permissions, sets `sp_fqf_<env>` = Is Owner and `sp_lh_deploy` = Can Manage, Save,
+  then re-runs the failed deploy in GitHub Actions (Re-run all jobs).
+- A stuck GitHub check: open the run and use "Re-run all jobs".
