@@ -1,0 +1,55 @@
+name: stream
+
+# 5.14: synthetic FQF payment events to Kafka (stream/producer.py). Every 2 hours from 07:00 IST it sends a batch to the
+# test and prod topics (30 minutes before the stream job reads them); dev only by hand. No personal data.
+# Kafka user lh_producer may only WRITE to fqf_payment_events_* (Aiven ACL). Secrets: KAFKA_BOOTSTRAP, KAFKA_CA_CERT,
+# KAFKA_PRODUCER_PASSWORD (never printed). Scheduled sends follow config/stream.yml producer.live.
+# By hand: Actions -> stream -> Run workflow; choose env and dry run (dry run = build the batch, send nothing).
+
+on:
+  schedule:
+    - cron: "30 1,3,5,7,9,11,13,15 * * *"   # UTC = 07:00 IST, then every 2 h until 21:00 IST
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        options: [dev, test, prod]
+        default: dev
+      dry_run:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stream-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  produce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{ fromJSON(github.event_name == 'schedule' && '["test","prod"]' || format('["{0}"]', inputs.env)) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install --quiet pyyaml confluent-kafka==2.6.1
+      - name: Send a batch of payment events
+        env:
+          KAFKA_BOOTSTRAP: ${{ secrets.KAFKA_BOOTSTRAP }}
+          KAFKA_CA_CERT: ${{ secrets.KAFKA_CA_CERT }}
+          KAFKA_PRODUCER_PASSWORD: ${{ secrets.KAFKA_PRODUCER_PASSWORD }}
+          ENV: ${{ matrix.env }}
+          DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'yes' || 'no' }}
+          SCHEDULED: ${{ github.event_name == 'schedule' && 'yes' || 'no' }}
+        run: |
+          flags=""
+          [ "$DRY" = yes ] && flags="--dry-run"
+          [ "$SCHEDULED" = yes ] && flags="$flags --scheduled"
+          python -m stream.producer --env "$ENV" $flags
