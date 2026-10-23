@@ -85,7 +85,11 @@ reads them with Structured Streaming (`src/lh/stream.py`, rules in `config/strea
 | Gold | `gold.payment_failure_windows` | failed payments per customer per 10-minute window, written once the window is closed; `is_alert` = 3 or more |
 
 Each layer keeps its own checkpoint, so nothing is read twice and a missed run is caught up. A velocity alert is
-mailed once by `ci/alerts.py`. Security: Kafka user `lh_producer` may only write, `lh_consumer_<env>` may only read its
+mailed once by `ci/alerts.py`, and the dashboard `fqf_lending_<env>` has a page **Payment events** (views
+`v_fqf_payments_live`: payments per IST day, hour, method and status; `v_fqf_payment_alerts`: alert windows).
+Privacy: `gold.payment_failure_windows.customer_ref` is masked as a token in test/prod (`config/privacy.yml`), so
+alert mails and the dashboard show tokens to everyone outside the clear groups. Bronze and Silver payment_events carry
+no masks on purpose: Databricks cannot stream from a masked table; they hold synthetic references only. Security: Kafka user `lh_producer` may only write, `lh_consumer_<env>` may only read its
 own topic (Aiven ACL); the consumer password of each environment sits only in its own scope `lh_<env>`. Events carry
 synthetic references only. Check: `checks/t32_stream`. Free Edition runs no 24/7 streams, hence scheduled runs.
 
