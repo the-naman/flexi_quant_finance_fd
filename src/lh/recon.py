@@ -8,6 +8,7 @@
 Every difference is one row in <catalog>.silver.reconciliation. The table is rebuilt in full on
 each run, so it always shows the open differences as of now. Counts also go to ops.dq_results.
 """
+
 from pyspark.sql import functions as F
 
 
@@ -52,13 +53,22 @@ def run(spark, cfg):
     """Rebuild silver.reconciliation and log the counts. Returns {recon: (pairs checked, differences)}."""
     cat = cfg["catalog"]
     pairs = bank_vs_books(spark, cat).unionByName(cash_vs_slips(spark, cat))
-    pairs = pairs.withColumn("difference", F.coalesce(F.col("other_amount"), F.lit(0)) - F.coalesce(F.col("books_amount"), F.lit(0)))
-    counts = {r["recon"]: (r["n"], r["bad"]) for r in
-              pairs.groupBy("recon").agg(F.count("*").alias("n"), F.count("issue").alias("bad")).collect()}
-    (pairs.filter("issue IS NOT NULL").withColumn("_silver_ts", F.current_timestamp())
-          .write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{cat}.silver.reconciliation"))
-    spark.createDataFrame([("reconciliation", k, n, bad, "pass" if bad == 0 else "warn") for k, (n, bad) in counts.items()],
-                          "table_name string, rule string, checked long, failed long, status string") \
-         .select(F.current_timestamp().alias("run_ts"), "*") \
-         .write.mode("append").saveAsTable(f"{cat}.ops.dq_results")
+    pairs = pairs.withColumn(
+        "difference", F.coalesce(F.col("other_amount"), F.lit(0)) - F.coalesce(F.col("books_amount"), F.lit(0))
+    )
+    counts = {
+        r["recon"]: (r["n"], r["bad"])
+        for r in pairs.groupBy("recon").agg(F.count("*").alias("n"), F.count("issue").alias("bad")).collect()
+    }
+    (
+        pairs.filter("issue IS NOT NULL")
+        .withColumn("_silver_ts", F.current_timestamp())
+        .write.mode("overwrite")
+        .option("overwriteSchema", "true")
+        .saveAsTable(f"{cat}.silver.reconciliation")
+    )
+    spark.createDataFrame(
+        [("reconciliation", k, n, bad, "pass" if bad == 0 else "warn") for k, (n, bad) in counts.items()],
+        "table_name string, rule string, checked long, failed long, status string",
+    ).select(F.current_timestamp().alias("run_ts"), "*").write.mode("append").saveAsTable(f"{cat}.ops.dq_results")
     return counts
