@@ -11,6 +11,7 @@ Lakehouse pipelines of Flexi Quant Finance (FQF), the lending company acquired b
 | `bi/` | BI views and AI/BI dashboards (published per environment) |
 | `jobs/` | the daily job as code (`config/jobs.yml`) |
 | `checks/` | automated checks (t00 = smoke check of every daily run, t28 = deployed jobs match config, t29 = each person's own access matches the access matrix) |
+| `stream/` | 5.14 real-time payment events: Kafka producer and the stream runner (FQF) |
 | `ci/`, `.github/workflows/` | promotion checks, approval notices, deploy after a merge, business notices, alerts and the weekly digest |
 | `config/` | every setting, per environment. No secrets: they live in GitHub secrets and Databricks secret scopes |
 | `setup_once/` | one-time environment setup and access grants (admin) |
@@ -71,3 +72,19 @@ scheduled run is quiet until `live` is switched on at go-live. Alerts read only 
 (`src/lh/observe.py`, run by `bi/01_create_views`) keeps only the column NAMES found in Bronze `_rescued_data`
 (`ops.rescued_keys`); a new name is planned by adding it to `from_rescued` in `config/silver.yml` through a PR.
 Try it: Actions -> **alerts** -> Run workflow, env test, what alerts or digest, mode dry-run or sample.
+
+## Real-time payment events (5.14)
+Loan repayments also arrive as live events: GitHub Actions (`stream.yml`, `stream/producer.py`) sends synthetic events
+to Kafka (Aiven free service, topic `fqf_payment_events_<env>`) every 2 hours; the stream job `lh_fqf_<env>_stream`
+reads them with Structured Streaming (`src/lh/stream.py`, rules in `config/stream.yml`) in short availableNow runs:
+
+| Layer | Table | What happens |
+|---|---|---|
+| Bronze | `bronze.payment_events` | every Kafka message as it came (offset, partition, raw text) |
+| Silver | `silver.payment_events` | parsed; broken messages left out; duplicates removed (event_id within the watermark); events later than the 15-minute watermark dropped |
+| Gold | `gold.payment_failure_windows` | failed payments per customer per 10-minute window, written once the window is closed; `is_alert` = 3 or more |
+
+Each layer keeps its own checkpoint, so nothing is read twice and a missed run is caught up. A velocity alert is
+mailed once by `ci/alerts.py`. Security: Kafka user `lh_producer` may only write, `lh_consumer_<env>` may only read its
+own topic (Aiven ACL); the consumer password of each environment sits only in its own scope `lh_<env>`. Events carry
+synthetic references only. Check: `checks/t32_stream`. Free Edition runs no 24/7 streams, hence scheduled runs.
