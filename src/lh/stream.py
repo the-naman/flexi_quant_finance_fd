@@ -102,4 +102,8 @@ def run(spark, cfg, layer, scfg, secret=None):
          .option("checkpointLocation", f"/Volumes/{cat}/ops/checkpoints/stream/{layer}")
          .trigger(availableNow=True).toTable(f"{cat}.{TABLES[layer]}"))
     q.awaitTermination()
-    return sum(int(p.get("numInputRows", 0)) for p in q.recentProgress)
+    rows = 0
+    for p in q.recentProgress:              # dicts (classic) or progress objects (serverless / Spark Connect)
+        n = p.get("numInputRows") if isinstance(p, dict) else getattr(p, "numInputRows", None)
+        rows += int(n or 0)
+    return rows
