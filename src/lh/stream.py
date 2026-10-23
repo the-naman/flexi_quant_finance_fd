@@ -87,8 +87,12 @@ TABLES = {"bronze": "bronze.payment_events", "silver": "silver.payment_events", 
 
 
 def run(spark, cfg, layer, scfg, secret=None):
-    """One availableNow run of one layer. Returns the number of rows read."""
+    """One availableNow run of one layer. Returns the number of rows the run added to its table (a count before and
+    after: serverless does not report row numbers in the streaming progress)."""
     cat, env = cfg["catalog"], cfg["env"]
+    target = f"{cat}.{TABLES[layer]}"
+    count = lambda: spark.table(target).count() if spark.catalog.tableExists(target) else 0
+    before = count()
     if layer == "bronze":
         src = spark.readStream.format("kafka").options(**kafka_options(scfg, env, secret)).load()
         out = to_bronze(src)
@@ -100,10 +104,6 @@ def run(spark, cfg, layer, scfg, secret=None):
         raise ValueError(f"unknown layer {layer}")
     q = (out.writeStream.format("delta").outputMode("append")
          .option("checkpointLocation", f"/Volumes/{cat}/ops/checkpoints/stream/{layer}")
-         .trigger(availableNow=True).toTable(f"{cat}.{TABLES[layer]}"))
+         .trigger(availableNow=True).toTable(target))
     q.awaitTermination()
-    rows = 0
-    for p in q.recentProgress:              # dicts (classic) or progress objects (serverless / Spark Connect)
-        n = p.get("numInputRows") if isinstance(p, dict) else getattr(p, "numInputRows", None)
-        rows += int(n or 0)
-    return rows
+    return count() - before
