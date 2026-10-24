@@ -67,6 +67,39 @@
         "FROM fqf_dev.gold.v_fqf_loan_book\n",
         "GROUP BY ALL\n"
       ]
+    },
+    {
+      "name": "pay_day",
+      "displayName": "Payments per day (30 days)",
+      "queryLines": [
+        "SELECT date_format(day, 'yyyy-MM-dd') AS day, status, sum(events) AS events\n",
+        "FROM fqf_dev.gold.v_fqf_payments_live\n",
+        "WHERE day >= date_sub(current_date(), 29)\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "pay_7",
+      "displayName": "Payments, last 7 days",
+      "queryLines": [
+        "SELECT method, lpad(CAST(hour_ist AS STRING), 2, '0') AS hour_ist,\n",
+        "       sum(events) AS events,\n",
+        "       sum(CASE WHEN status = 'failed' THEN events ELSE 0 END) AS failed,\n",
+        "       sum(CASE WHEN status = 'failed' THEN amount ELSE 0 END) AS failed_amount\n",
+        "FROM fqf_dev.gold.v_fqf_payments_live\n",
+        "WHERE day >= date_sub(current_date(), 6)\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "alerts_7",
+      "displayName": "Velocity alerts, last 7 days",
+      "queryLines": [
+        "SELECT date_format(window_start_ist, 'dd MMM HH:mm') AS window_ist, customer_ref,\n",
+        "       failed_payments, failed_amount, 1 AS alert\n",
+        "FROM fqf_dev.gold.v_fqf_payment_alerts\n",
+        "WHERE window_start_ist >= date_sub(current_date(), 6)\n"
+      ]
     }
   ],
   "pages": [
@@ -903,6 +936,428 @@
         }
       ],
       "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "payments",
+      "displayName": "Payment events",
+      "layout": [
+        {
+          "widget": {
+            "name": "p_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Payment events  ·  real time\n",
+                "\n",
+                "#### Loan repayments from the payment gateway, read from Kafka every 2 hours (Bronze → Silver → Gold). An alert = 3 or more failed payments by one customer in 10 minutes; it is also mailed once. Times in IST. Customer references show as tokens unless you may see real values. Source: fqf\\_dev.gold views."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "p_c_events",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pay_7",
+                  "fields": [
+                    {
+                      "name": "sum(events)",
+                      "expression": "SUM(`events`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(events)",
+                  "displayName": "Payments (7 days)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Payments (7 days)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "p_c_failed",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pay_7",
+                  "fields": [
+                    {
+                      "name": "sum(failed)",
+                      "expression": "SUM(`failed`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(failed)",
+                  "displayName": "Failed (7 days)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Failed (7 days)"
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "p_c_amount",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pay_7",
+                  "fields": [
+                    {
+                      "name": "sum(failed_amount)",
+                      "expression": "SUM(`failed_amount`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(failed_amount)",
+                  "displayName": "Failed amount INR (7 days)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Failed amount INR (7 days)"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "p_c_alerts",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "alerts_7",
+                  "fields": [
+                    {
+                      "name": "sum(alert)",
+                      "expression": "SUM(`alert`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(alert)",
+                  "displayName": "Alert windows (7 days)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Alert windows (7 days)"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "p_w_day",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pay_day",
+                  "fields": [
+                    {
+                      "name": "day",
+                      "expression": "`day`"
+                    },
+                    {
+                      "name": "sum(events)",
+                      "expression": "SUM(`events`)"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "day",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Day"
+                },
+                "y": {
+                  "fieldName": "sum(events)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Payments"
+                },
+                "color": {
+                  "fieldName": "status",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Status"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Payments per day by status (30 days)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "p_w_method",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pay_7",
+                  "fields": [
+                    {
+                      "name": "method",
+                      "expression": "`method`"
+                    },
+                    {
+                      "name": "sum(failed)",
+                      "expression": "SUM(`failed`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "method",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Method"
+                },
+                "y": {
+                  "fieldName": "sum(failed)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Failed payments"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Failed payments by method (7 days)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "p_w_hour",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pay_7",
+                  "fields": [
+                    {
+                      "name": "hour_ist",
+                      "expression": "`hour_ist`"
+                    },
+                    {
+                      "name": "sum(failed)",
+                      "expression": "SUM(`failed`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "hour_ist",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Hour (IST)"
+                },
+                "y": {
+                  "fieldName": "sum(failed)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Failed payments"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Failed payments by hour, IST (7 days)"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 11,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "p_w_alerts",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "alerts_7",
+                  "fields": [
+                    {
+                      "name": "window_ist",
+                      "expression": "`window_ist`"
+                    },
+                    {
+                      "name": "sum(failed_payments)",
+                      "expression": "SUM(`failed_payments`)"
+                    },
+                    {
+                      "name": "customer_ref",
+                      "expression": "`customer_ref`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "window_ist",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Window start (IST)"
+                },
+                "y": {
+                  "fieldName": "sum(failed_payments)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Failed payments"
+                },
+                "color": {
+                  "fieldName": "customer_ref",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Customer ref"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Alert windows: failed payments per customer (7 days)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 17,
+            "width": 6,
+            "height": 6
+          }
+        }
+      ]
     }
   ],
   "uiSettings": {

@@ -21,6 +21,13 @@ personal:                    # silver column names; the bronze name is taken fro
   bank_settlements: {bank_ref: token}
   reconciliation:   {ref: token}
   dim_customer:     {id_fingerprint: token, contact_fingerprint: token}
+  payment_failure_windows: {customer_ref: token}    # 5.14 stream Gold (alerts, BI); see gold_tables below
+
+# Gold tables listed under personal that are not dim_/fact_ (checked in Gold, not against Silver).
+# The stream's bronze/silver.payment_events get no masks on purpose: Databricks cannot stream from a table with
+# column masks, and those two tables are streaming sources. They hold synthetic references only (no names, phones,
+# dates of birth or national ids); the producer pseudonymises at the source, the way a payment gateway sends tokens.
+gold_tables: [payment_failure_windows]
 
 technical: [raw_row, _rescued_data, content]      # hold a whole source row or file: hidden in every table that has them
 
