@@ -5,6 +5,7 @@ Every step takes (spark, bronze rows, config entry) and returns text columns nam
 `columns` sources of that entry, plus the bronze metadata columns. A step may add `_reject`
 (a reason): that row goes to quarantine as not_prepared.
 """
+
 import io
 import json
 import re
@@ -58,7 +59,8 @@ def gateway_payments(spark, df, spec):
         F.col("method").cast("string").alias("mode"),
         _rupees(F.col("late_fee")).alias("late_fee"),
         _ist(F.col("updated_at"), "yyyy-MM-dd HH:mm:ss").alias("last_modified"),
-        *_keep(df))
+        *_keep(df),
+    )
 
 
 def bureau_checks(spark, df, spec):
@@ -72,7 +74,8 @@ def bureau_checks(spark, df, spec):
         _field(df, "decision", "result").alias("decision"),
         _no_offset(F.col("pulled_at")).alias("check_ts"),
         _no_offset(F.col("updated_at")).alias("last_modified"),
-        *_keep(df))
+        *_keep(df),
+    )
 
 
 def drift_headers(spark, df, spec):
@@ -86,16 +89,25 @@ def drift_headers(spark, df, spec):
     known = lambda x: F.try_element_at(lookup, F.lower(F.trim(x)))
     values = F.array(*[F.col(c) for c in cells])
     is_header = F.coalesce(F.lower(F.trim(F.col(cells[0]))).isin(list(alias)), F.lit(False))
-    headings = (df.filter(is_header).select(
-        F.col("_source_file").alias("_hf"),
-        F.transform(values, known).alias("_names"),
-        F.filter(values, lambda x: x.isNotNull() & known(x).isNull()).alias("_unknown")).dropDuplicates(["_hf"]))
-    rows = (df.filter(~is_header).withColumn("_values", values)
-              .join(F.broadcast(headings), F.col("_source_file") == F.col("_hf"), "left"))
+    headings = (
+        df.filter(is_header)
+        .select(
+            F.col("_source_file").alias("_hf"),
+            F.transform(values, known).alias("_names"),
+            F.filter(values, lambda x: x.isNotNull() & known(x).isNull()).alias("_unknown"),
+        )
+        .dropDuplicates(["_hf"])
+    )
+    rows = (
+        df.filter(~is_header)
+        .withColumn("_values", values)
+        .join(F.broadcast(headings), F.col("_source_file") == F.col("_hf"), "left")
+    )
     at = lambda name: F.array_position("_names", name).cast("int")
     out = [F.when(at(name) > 0, F.element_at("_values", at(name))).alias(name) for name in spec["headers"]]
-    reject = (F.when(F.col("_hf").isNull(), F.lit("file has no heading row"))
-               .when(F.size("_unknown") > 0, F.concat(F.lit("unknown heading: "), F.array_join("_unknown", ", "))))
+    reject = F.when(F.col("_hf").isNull(), F.lit("file has no heading row")).when(
+        F.size("_unknown") > 0, F.concat(F.lit("unknown heading: "), F.array_join("_unknown", ", "))
+    )
     return rows.select(*out, reject.alias("_reject"), *_keep(df))
 
 
@@ -109,9 +121,10 @@ def read_bank_pdf(content):
     rows: (line_no, value_date, bank_ref, loan_id, amount, status, statement_no, statement_date).
     The statement's own footer (number of lines, total settled) is used as a control."""
     from pypdf import PdfReader
+
     try:
         text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(content)).pages)
-    except Exception as e:                          # not a readable PDF
+    except Exception as e:  # noqa: BLE001 - not a readable PDF: rejected with the reason
         return [], f"pdf could not be read: {type(e).__name__}"
     head, foot = BANK_HEAD.search(text), BANK_FOOT.search(text)
     lines = [m.groups() for m in map(BANK_LINE.match, text.splitlines()) if m]
@@ -136,9 +149,19 @@ def bank_statement(spark, df, spec):
     for f in df.select("content", *keep).collect():
         meta = tuple(f[c] for c in keep)
         rows, reason = read_bank_pdf(bytes(f["content"]))
-        for r in rows or [(None,) * 8]:             # an unreadable file still gives one row, for the quarantine
+        for r in rows or [(None,) * 8]:  # an unreadable file still gives one row, for the quarantine
             out.append(tuple(None if v is None else str(v) for v in r) + (reason,) + meta)
-    names = ["line_no", "value_date", "bank_ref", "loan_id", "amount", "status", "statement_no", "statement_date", "_reject"]
+    names = [
+        "line_no",
+        "value_date",
+        "bank_ref",
+        "loan_id",
+        "amount",
+        "status",
+        "statement_no",
+        "statement_date",
+        "_reject",
+    ]
     schema = ", ".join(f"{n} string" for n in names)
     for c in keep:
         schema += f", {c} {dict(df.dtypes)[c]}"
@@ -164,32 +187,47 @@ def read_slip(parsed, min_confidence):
     elements = (doc.get("document") or {}).get("elements") or []
     text = "\n".join(str(e.get("content") or "") for e in elements if e.get("type") != "table")
     lines = []
-    for e in elements:                              # the OCR returns a table as HTML
+    for e in elements:  # the OCR returns a table as HTML
         if e.get("type") == "table":
             for tr in re.findall(r"<tr>(.*?)</tr>", str(e.get("content") or ""), re.S):
                 lines.append([c.strip() for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)])
-    if not lines:                                   # or as plain text lines
+    if not lines:  # or as plain text lines
         lines = [list(m.groups()) for m in map(SLIP_LINE.match, text.splitlines()) if m]
     lines = [c for c in lines if len(c) == 3 and re.fullmatch(r"\d+", c[1]) and re.fullmatch(r"-?[\d,]+\.\d{2}", c[2])]
     slip, period = SLIP_NO.search(text), SLIP_PERIOD.search(text)
     # confidence of the parts that carry data (the table, the slip number and period); a logo line or
     # a signature line read with less confidence must not block the slip
-    carries = lambda e: (e.get("type") == "table" or SLIP_NO.search(str(e.get("content") or ""))
-                         or SLIP_PERIOD.search(str(e.get("content") or ""))
-                         or any(SLIP_LINE.match(x) for x in str(e.get("content") or "").splitlines()))
+    carries = lambda e: (
+        e.get("type") == "table"
+        or SLIP_NO.search(str(e.get("content") or ""))
+        or SLIP_PERIOD.search(str(e.get("content") or ""))
+        or any(SLIP_LINE.match(x) for x in str(e.get("content") or "").splitlines())
+    )
     scores = [e["confidence"] for e in elements if e.get("confidence") is not None and carries(e)]
     confidence = min(scores) if scores else 0.0
     branches = [c for c in lines if c[0].upper() != "TOTAL"]
     total = [c for c in lines if c[0].upper() == "TOTAL"]
-    rows = [(slip.group(1) if slip else None, b, period.group(1) if period else None,
-             period.group(2) if period else None, n, amt, f"{confidence:.4f}") for b, n, amt in branches]
+    rows = [
+        (
+            slip.group(1) if slip else None,
+            b,
+            period.group(1) if period else None,
+            period.group(2) if period else None,
+            n,
+            amt,
+            f"{confidence:.4f}",
+        )
+        for b, n, amt in branches
+    ]
     money = lambda t: round(float(t.replace(",", "")), 2)
     if not slip or not period or not branches or not total:
         return rows, "slip number, period, branch lines or TOTAL line not found"
     if confidence < min_confidence:
         return rows, f"OCR confidence {confidence:.2f} is below {min_confidence}"
-    if (sum(int(c[1]) for c in branches) != int(total[0][1])
-            or abs(sum(money(c[2]) for c in branches) - money(total[0][2])) > 0.005):
+    if (
+        sum(int(c[1]) for c in branches) != int(total[0][1])
+        or abs(sum(money(c[2]) for c in branches) - money(total[0][2])) > 0.005
+    ):
         return rows, "branch lines do not add up to the TOTAL line"
     return rows, None
 
@@ -204,12 +242,10 @@ def deposit_slip(spark, df, spec):
     for f in parsed:
         meta = tuple(f[c] for c in keep)
         rows, reason = read_slip(f["_parsed"], float(spec.get("min_confidence", 0.9)))
-        for r in rows or [(None,) * 7]:             # an unreadable slip still gives one row, for the quarantine
+        for r in rows or [(None,) * 7]:  # an unreadable slip still gives one row, for the quarantine
             out.append(tuple(r) + (reason,) + meta)
     names = ["slip_no", "branch_id", "deposit_from", "deposit_to", "receipts", "amount", "ocr_confidence", "_reject"]
     schema = ", ".join(f"{n} string" for n in names)
     for c in keep:
         schema += f", {c} {dict(df.dtypes)[c]}"
     return spark.createDataFrame(out, schema)
-
-    
