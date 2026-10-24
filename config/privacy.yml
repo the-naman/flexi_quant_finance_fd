@@ -9,6 +9,7 @@ clear:
   # SELECT on fqf_<env>.gold only (no bronze, silver or raw files), and Gold holds no names, phones or dates of birth.
 pipeline: {test: sp_fqf_test, prod: sp_fqf_prod}                 # job accounts, always see real values
 
+vault: {catalog: lh_vault, environments: [test, prod]}         # keyed token masks: key + function in lh_vault.<catalog> (ADR 0010)
 layers: [bronze, silver, gold]                                   # gold tables get their masks in the gold runner
 
 # mask types:  last4   = only the last 4 characters shown
