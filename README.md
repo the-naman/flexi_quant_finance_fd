@@ -161,7 +161,7 @@ top of the hour, where GitHub may delay or drop runs. Test and prod each run one
 | 05:00 FQF, 06:00 BHG | `lh_<code>_test_daily` | test daily job |
 | 03:45 to 19:45, every 2 h | `notices.yml` | business notices (figures delayed / up to date again / FQF merged) |
 | 04:45 to 20:45, every 2 h | `alerts.yml` | data alerts for prod (after the prod jobs); 07:05 test; Monday 09:15 weekly digest; 20:45 dev activity |
-| 07:00 to 21:00, every 2 h | `stream.yml` | synthetic payment events to Kafka (test and prod topics) |
+| 06:37 to 20:37, every 2 h | `stream.yml` | synthetic payment events to Kafka (test and prod topics) |
 | 07:30 to 21:30, every 2 h | `lh_fqf_prod_stream` | reads the prod events (bronze -> silver -> gold) |
 | 08:50, 14:50, 20:50 | `lh_fqf_test_stream` | reads the test events |
 | 1st of the month, 08:47 | `keepalive.yml` | keeps the scheduled workflows enabled |
