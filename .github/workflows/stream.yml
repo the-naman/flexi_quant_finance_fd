@@ -8,7 +8,8 @@ name: stream
 
 on:
   schedule:
-    - cron: "30 1,3,5,7,9,11,13,15 * * *"   # UTC = 07:00 IST, then every 2 h until 21:00 IST
+    - cron: "7 1,3,5,7,9,11,13,15 * * *"    # UTC = 06:37 IST, then every 2 h until 20:37 IST (about 50 min before each
+                                            # stream run; minute :07 because GitHub dropped most :30 runs, 25 Oct)
   workflow_dispatch:
     inputs:
       env:
