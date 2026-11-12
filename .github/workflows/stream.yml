@@ -1,10 +1,16 @@
 name: stream
+run-name: ${{ inputs.timed && 'stream timer' || 'stream' }}
 
 # 5.14: synthetic FQF payment events to Kafka (stream/producer.py). Every 2 hours from 07:00 IST it sends a batch to the
 # test and prod topics (30 minutes before the stream job reads them); dev only by hand. No personal data.
 # Kafka user lh_producer may only WRITE to fqf_payment_events_* (Aiven ACL). Secrets: KAFKA_BOOTSTRAP, KAFKA_CA_CERT,
 # KAFKA_PRODUCER_PASSWORD (never printed). Scheduled sends follow config/stream.yml producer.live.
 # By hand: Actions -> stream -> Run workflow; choose env and dry run (dry run = build the batch, send nothing).
+# 29a: GitHub's scheduler skipped most of these runs (11-12 Nov: 3 of 16, one 2 h late), so most stream runs read
+# nothing. The VPS timer lh-tick (docs/runbook.md section 7) now starts this workflow at 06:34-20:34 IST with
+# workflow_dispatch and timed=true (run name "stream timer"): test and prod, real send, like a scheduled run.
+# The schedule below stays as a fallback only: its gate job skips the send when a timer run started in the last
+# 125 minutes, so a late GitHub run never sends a second batch for the same slot.
 
 on:
   schedule:
@@ -19,22 +25,49 @@ on:
       dry_run:
         type: boolean
         default: true
+      timed:
+        type: boolean
+        description: Set only by the VPS timer lh-tick (29a) - sends to test and prod like a scheduled run
+        default: false
 
 permissions:
   contents: read
+  actions: read      # 29a: the gate job reads the recent timer runs of this workflow
 
 concurrency:
   group: stream-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
+  gate:
+    # 29a: GitHub's own schedule is the fallback. Skip it when the VPS timer already started this slot.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.look.outputs.skip }}
+    steps:
+      - id: look
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          since=$(date -u -d '125 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          n=$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/stream.yml/runs" \
+                -f event=workflow_dispatch -f "created=>=${since}" -f per_page=50 \
+                --jq '[.workflow_runs[] | select(.display_title == "stream timer" and .conclusion != "failure")] | length') \
+            || { echo "::warning::could not read the timer runs; sending anyway"; n=0; }
+          echo "timer runs since ${since}: ${n}"
+          if [ "${n:-0}" -gt 0 ]; then echo "skip=yes" >> "$GITHUB_OUTPUT"; else echo "skip=no" >> "$GITHUB_OUTPUT"; fi
+
   produce:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.skip != 'yes' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        env: ${{ fromJSON(github.event_name == 'schedule' && '["test","prod"]' || format('["{0}"]', inputs.env)) }}
+        env: ${{ fromJSON((github.event_name == 'schedule' || inputs.timed) && '["test","prod"]' || format('["{0}"]', inputs.env)) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
@@ -47,8 +80,8 @@ jobs:
           KAFKA_CA_CERT: ${{ secrets.KAFKA_CA_CERT }}
           KAFKA_PRODUCER_PASSWORD: ${{ secrets.KAFKA_PRODUCER_PASSWORD }}
           ENV: ${{ matrix.env }}
-          DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'yes' || 'no' }}
-          SCHEDULED: ${{ github.event_name == 'schedule' && 'yes' || 'no' }}
+          DRY: ${{ github.event_name == 'workflow_dispatch' && !inputs.timed && inputs.dry_run && 'yes' || 'no' }}
+          SCHEDULED: ${{ (github.event_name == 'schedule' || inputs.timed) && 'yes' || 'no' }}
         run: |
           flags=""
           [ "$DRY" = yes ] && flags="--dry-run"
