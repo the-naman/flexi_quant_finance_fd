@@ -2,7 +2,9 @@
 Writes as the Kafka user lh_producer (write-only on fqf_payment_events_*); connection from the GitHub secrets
 KAFKA_BOOTSTRAP, KAFKA_CA_CERT, KAFKA_PRODUCER_PASSWORD. No personal data: customer_ref and loan_ref are synthetic.
 Each run also plants the cases the pipeline must handle: a failure burst (velocity alert), duplicates, a 2-hours-late
-event and one broken message. Prints counts only.  python -m stream.producer --env test [--events 300] [--dry-run]"""
+event and one broken message. 30a: a scheduled or timed send plants the burst only in the IST hours of
+config/stream.yml producer.burst_hours_ist (2 velocity alerts a day per env, not 8); a send by hand always plants it.
+Prints counts only.  python -m stream.producer --env test [--events 300] [--dry-run] [--at 2026-11-18T02:34:00Z]"""
 
 import argparse
 import json
@@ -18,6 +20,7 @@ p.add_argument("--env", required=True, choices=["dev", "test", "prod"])
 p.add_argument("--events", type=int)
 p.add_argument("--dry-run", action="store_true")
 p.add_argument("--scheduled", action="store_true")
+p.add_argument("--at", help="pretend the send happens at this UTC time (tests and dry runs)")
 a = p.parse_args()
 with open("config/stream.yml") as f:
     scfg = yaml.safe_load(f)
@@ -25,7 +28,9 @@ if a.scheduled and not scfg["producer"]["live"].get(a.env):
     print(f"{a.env}: scheduled sends are off (config/stream.yml producer.live)")
     sys.exit(0)
 n = a.events or scfg["producer"]["events"]
-now = datetime.now(UTC).replace(microsecond=0)
+now = (datetime.fromisoformat(a.at.replace("Z", "+00:00")) if a.at else datetime.now(UTC)).replace(microsecond=0)
+hour_ist = (now + timedelta(hours=5, minutes=30)).hour
+plant = not a.scheduled or hour_ist in scfg["producer"].get("burst_hours_ist", range(24))
 rnd = random.Random()
 METHODS, REASONS = (
     ["upi", "card", "netbanking", "nach"],
@@ -48,13 +53,14 @@ def event(cust=None, status=None, ts=None):
 
 
 msgs = [event() for _ in range(n)]
-burst = f"SC9{rnd.randint(100, 999)}"  # one customer fails 4 times in 40 seconds,
-start = now.replace(minute=now.minute - now.minute % 10, second=0)  # all inside the current 10-minute window
-msgs += [event(burst, "failed", start + timedelta(seconds=10 * k)) for k in range(4)]
+if plant:
+    burst = f"SC9{rnd.randint(100, 999)}"  # one customer fails 4 times in 40 seconds,
+    start = now.replace(minute=now.minute - now.minute % 10, second=0)  # all inside the current 10-minute window
+    msgs += [event(burst, "failed", start + timedelta(seconds=10 * k)) for k in range(4)]
 msgs += [dict(m) for m in rnd.sample(msgs, 3)]  # the same event sent again (duplicates)
 msgs.append(event(ts=now - timedelta(hours=2)))  # far too late: must be dropped
 msgs.append("{broken message")  # not an event: stays in Bronze only
-print(f"{a.env}: {len(msgs)} messages ({n} events, 4 burst, 3 duplicates, 1 late, 1 broken)")
+print(f"{a.env}: {len(msgs)} messages ({n} events, {4 if plant else 'no'} burst, 3 duplicates, 1 late, 1 broken)")
 if a.dry_run:
     print("(dry run: nothing sent)")
     sys.exit(0)
